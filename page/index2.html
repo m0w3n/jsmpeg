@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket视频流展示系统</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="public/css/index.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-bg"></div>
+            <div class="header-content">
+                <h1><i class="fas fa-video"></i> WebSocket视频流展示系统(单连接单摄像头)</h1>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <div >
+                <div class="panel">
+                    <h2 class="panel-title"><i class="fas fa-plug"></i> 连接控制</h2>
+
+                    <div class="status-indicator">
+                        <div class="status-dot" id="statusDot"></div>
+                        <div class="status-text" id="statusText">未连接</div>
+                    </div>
+
+                    <div class="server-url-input">
+                        <input type="text" id="serverUrl" placeholder="输入WebSocket服务器地址" value="">
+                        <button id="setServerBtn">设置</button>
+                    </div>
+
+                    <div class="controls">
+                        <button class="btn btn-primary" id="connectBtn">
+                            <i class="fas fa-link"></i> 连接服务器
+                        </button>
+                        <button class="btn btn-danger" id="disconnectBtn" disabled>
+                            <i class="fas fa-unlink"></i> 断开连接
+                        </button>
+                    </div>
+
+                    <div class="connection-stats">
+                        <div class="stat-item">
+                            <div class="stat-value" id="frameRate">0</div>
+                            <div class="stat-label">帧率 (FPS)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="frameCount">0</div>
+                            <div class="stat-label">帧数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="latency">0ms</div>
+                            <div class="stat-label">延迟</div>
+                        </div>
+                    </div>
+
+                    <div class="fps-control">
+                        <span>帧率控制:</span>
+                        <input type="range" id="fpsSlider" min="1" max="30" value="20">
+                        <span class="fps-value" id="fpsValue">30 FPS</span>
+                    </div>
+                </div>
+
+
+                <div class="panel">
+                    <h2 class="panel-title"><i class="fas fa-tachometer-alt"></i> 系统状态</h2>
+
+                    <div class="connection-info">
+                        <div class="info-item">
+                            <div class="info-label">连接状态</div>
+                            <div class="info-value" id="connectionStatus">未连接</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">最后活动</div>
+                            <div class="info-value" id="lastActivity">从未</div>
+                        </div>
+                    </div>
+
+                    <h3 class="panel-title" style="margin-top: 25px; font-size: 1.2rem;"><i class="fas fa-list"></i> 操作日志</h3>
+                    <div class="logs" id="logContainer">
+                        <div class="log-entry">
+                            <span class="log-timestamp">[系统]</span>
+                            <span class="log-message">应用已就绪，等待连接服务器...</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div class="panel">
+                <h2 class="panel-title"><i class="fas fa-video"></i> 视频流展示</h2>
+
+                <div class="video-container" id="imageContainer">
+                    <div class="video-placeholder" id="videoPlaceholder">
+                        <i class="fas fa-satellite-dish"></i>
+                        <p>尚未接收视频流。连接服务器后，视频将显示在此区域。</p>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+
+
+
+        <footer>
+            <p>WebSocket视频流展示系统 &copy; 2023 | 基于WebSocket和Canvas技术实现</p>
+        </footer>
+    </div>
+
+    <script>
+        // 全局变量
+        let ws = null;
+        let frameCount = 0;
+        let lastFrameTime = null;
+        let fps = 0;
+        let lastActivity = null;
+        let targetFps = 30;
+        let frameTimer = null;
+        let isPlaying = false;
+        let frameBuffer = [];
+        let canvas, ctx;
+
+        // DOM元素
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const logContainer = document.getElementById('logContainer');
+        const frameRateElement = document.getElementById('frameRate');
+        const frameCountElement = document.getElementById('frameCount');
+        const latencyElement = document.getElementById('latency');
+        const connectionStatusElement = document.getElementById('connectionStatus');
+        const lastActivityElement = document.getElementById('lastActivity');
+        const serverUrlInput = document.getElementById('serverUrl');
+        const setServerBtn = document.getElementById('setServerBtn');
+        const videoPlaceholder = document.getElementById('videoPlaceholder');
+        const videoCanvas = document.getElementById('videoCanvas');
+        const fpsSlider = document.getElementById('fpsSlider');
+        const fpsValue = document.getElementById('fpsValue');
+
+        // 默认服务器地址（模拟地址）
+        var query_list = document.location.href.split('?');
+        var query = "" ? query.length < 2 : query_list[1];
+        if (!query.includes("token")) query += "&token=";
+        if (!query.includes("deviceId")) query += "&deviceId=";
+        if (!query.includes("cameraId")) query += "&cameraId=";
+        let serverUrl = 'ws://'+document.location.hostname+':8082/?'+query;//?token=&deviceId=&cameraId=;
+        serverUrlInput.value = serverUrl;
+
+        // 初始化Canvas
+        function initCanvas() {
+            canvas = document.getElementById('videoCanvas');
+            ctx = canvas.getContext('2d');
+
+            // 设置Canvas尺寸
+            const container = document.querySelector('.video-container');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+
+        // 更新状态显示
+        function updateStatus(connected) {
+            if (connected) {
+                statusDot.classList.add('connected');
+                statusText.textContent = '已连接';
+                connectionStatusElement.textContent = '已连接';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                videoCanvas.style.display = 'block';
+                videoPlaceholder.style.display = 'none';
+            } else {
+                statusDot.classList.remove('connected');
+                statusText.textContent = '未连接';
+                connectionStatusElement.textContent = '未连接';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                videoCanvas.style.display = 'none';
+                videoPlaceholder.style.display = 'flex';
+
+                // 停止播放
+                //pauseVideo();
+            }
+        }
+
+        // 添加日志条目
+        function addLog(message, isError = false) {
+            const now = new Date();
+            const timestamp = `[${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}]`;
+
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+
+            const timestampSpan = document.createElement('span');
+            timestampSpan.className = 'log-timestamp';
+            timestampSpan.textContent = timestamp;
+
+            const messageSpan = document.createElement('span');
+            messageSpan.className = isError ? 'log-message log-error' : 'log-message';
+            messageSpan.textContent = message;
+
+            logEntry.appendChild(timestampSpan);
+            logEntry.appendChild(messageSpan);
+            logContainer.appendChild(logEntry);
+
+            // 自动滚动到底部
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // 显示视频帧
+        function displayFrame(imageData) {
+            if (!isPlaying) return;
+
+            const now = Date.now();
+            const img = new Image();
+
+            img.onload = function() {
+                // 绘制图像到Canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                // 计算帧率
+                if (lastFrameTime) {
+                    const delta = now - lastFrameTime;
+                    fps = Math.round(1000 / delta);
+                    frameRateElement.textContent = fps;
+                }
+
+                lastFrameTime = now;
+                frameCount++;
+                frameCountElement.textContent = frameCount;
+                lastActivity = new Date();
+                lastActivityElement.textContent = lastActivity.toLocaleTimeString();
+            };
+
+            //img.src = imageData;
+            img.src = URL.createObjectURL(imageData);
+        }
+
+        // 处理接收到的帧数据
+        function processFrame(data) {
+            // 在实际应用中，这里应该处理真实的WebSocket消息
+            // 为演示目的，我们模拟接收图片帧
+
+            // 创建Base64编码的图片数据
+            const imageData = data;//`data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAAKAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJ+AB//Z`;
+
+            // 添加到帧缓冲区
+            frameBuffer.push(imageData);
+
+            // 更新延迟显示
+            latencyElement.textContent = `${Math.floor(Math.random() * 100)}ms`;
+        }
+
+        // 播放视频
+        function playVideo() {
+            if (isPlaying) return;
+
+            isPlaying = true;
+            addLog('视频播放已开始');
+
+            // 设置帧率
+            const interval = 1000 / targetFps;
+
+            // 开始播放帧
+            frameTimer = setInterval(() => {
+                if (frameBuffer.length > 0) {
+                    const frame = frameBuffer.shift();
+                    displayFrame(frame);
+                }
+            }, interval);
+        }
+
+        // 连接WebSocket
+        function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                addLog('连接已存在或正在连接', true);
+                return;
+            }
+
+            const serverUrl = serverUrlInput.value.trim();
+            addLog(`正在连接到: ${serverUrl}`);
+
+            try {
+                // 模拟连接（实际应用中应使用真实的WebSocket连接）
+                updateStatus(true);
+                addLog('连接成功');
+
+                ws = new WebSocket(serverUrl);
+
+                ws.onopen = () => {
+                    console.log("WebSocket 连接已建立");
+                };
+
+                ws.onmessage = (event) => {
+                    // console.log("收到消息:", event.data);
+                    processFrame(event.data);
+                };
+
+                ws.onerror = (error) => {
+                    console.error("WebSocket 错误:", error);
+                };
+
+                ws.onclose = () => {
+                    console.log("WebSocket 连接已关闭");
+                    this.readyState = WebSocket.CLOSED;
+                    clearInterval(interval);
+                    updateStatus(false);
+                    addLog('连接已关闭');
+                    //pauseVideo();
+                };
+
+                // 自动开始播放
+                playVideo();
+
+            } catch (error) {
+                addLog(`连接失败: ${error.message}`, true);
+                updateStatus(false);
+            }
+        }
+
+        // 断开WebSocket
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        // 设置服务器地址
+        function setServerUrl() {
+            const url = serverUrlInput.value.trim();
+            if (url) {
+                if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                    addLog('服务器地址必须以 ws:// 或 wss:// 开头', true);
+                    return;
+                }
+
+                addLog(`服务器地址已设置为: ${url}`);
+            } else {
+                addLog('服务器地址不能为空', true);
+            }
+        }
+
+        // 初始化
+        function init() {
+            // 初始化Canvas
+            initCanvas();
+
+            // 设置事件监听器
+            connectBtn.addEventListener('click', connectWebSocket);
+            disconnectBtn.addEventListener('click', disconnectWebSocket);
+            setServerBtn.addEventListener('click', setServerUrl);
+
+            // 帧率控制
+            fpsSlider.addEventListener('input', () => {
+                targetFps = parseInt(fpsSlider.value);
+                fpsValue.textContent = `${targetFps} FPS`;
+
+                // 如果正在播放，重启播放器以应用新帧率
+                if (isPlaying) {
+                    //pauseVideo();
+                    playVideo();
+                }
+            });
+
+            // 初始状态
+            updateStatus(false);
+            addLog('应用初始化完成');
+
+            // 窗口大小变化时调整Canvas
+            window.addEventListener('resize', initCanvas);
+        }
+
+        // 页面加载完成后初始化
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

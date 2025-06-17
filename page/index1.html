@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket视频流展示系统</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="public/css/index.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-bg"></div>
+            <div class="header-content">
+                <h1><i class="fas fa-video"></i> WebSocket视频流展示系统(单连接)</h1>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <div >
+                <div class="panel">
+                    <h2 class="panel-title"><i class="fas fa-plug"></i> 连接控制</h2>
+
+                    <div class="server-url-input">
+                        <input type="text" id="serverUrl" placeholder="输入WebSocket服务器地址" value="">
+                        <button id="setServerBtn">设置</button>
+                    </div>
+
+                    <div class="controls">
+                        <button class="btn btn-primary" id="connectBtn">
+                            <i class="fas fa-link"></i> 连接服务器
+                        </button>
+                        <button class="btn btn-danger" id="disconnectBtn" disabled>
+                            <i class="fas fa-unlink"></i> 断开连接
+                        </button>
+                    </div>
+
+                    <div class="connection-info">
+                        <div class="info-item">
+                            <div class="info-label">连接状态</div>
+                            <div class="info-value">
+                                <div class="status-dot" style="display: inline-block;margin-bottom: -4px;" id="statusDot"></div>
+                                <div class="info-value" style="display: inline-block;" id="connectionStatus">未连接</div>
+                            </div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">最后活动</div>
+                            <div class="info-value" id="lastActivity">从未</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">摄像头</div>
+                            <div class="info-value" id="cameraIds">...</div>
+                        </div>
+                    </div>
+
+                    <div class="connection-stats">
+                        <div class="stat-item">
+                            <div class="stat-value" id="frameRate">0</div>
+                            <div class="stat-label">帧率 (FPS)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="frameCount">0</div>
+                            <div class="stat-label">帧数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="latency">0ms</div>
+                            <div class="stat-label">平均延迟</div>
+                        </div>
+                    </div>
+
+                    <div class="fps-control">
+                        <span>帧率控制:</span>
+                        <input type="range" id="fpsSlider" min="1" max="30" value="20">
+                        <span class="fps-value" id="fpsValue">30 FPS</span>
+                    </div>
+                </div>
+
+
+                <div class="panel">
+                    <h2 class="panel-title"><i class="fas fa-list"></i> 操作日志</h2>
+                    <div class="logs" id="logContainer">
+                        <div class="log-entry">
+                            <span class="log-timestamp">[系统]</span>
+                            <span class="log-message">应用已就绪，等待连接服务器...</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="panel">
+                <h2 class="panel-title"><i class="fas fa-image"></i> 视频展示区</h2>
+                <div class="image-container" id="imageContainer">
+                    <div class="placeholder video-placeholder">
+                        <i class="fas fa-satellite-dish"></i>
+                        <p>尚未接收视频流。连接服务器后，视频将显示在此区域。</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <footer>
+            <p>WebSocket视频流展示系统 &copy; 2023 | 基于WebSocket和Canvas技术实现</p>
+        </footer>
+    </div>
+
+    <script>
+        // 全局变量
+        let ws = null;
+        let frameCount = 0;
+        let lastFrameTime = null;
+        let fps = 0;
+        let lastActivity = null;
+        let targetFps = 20;
+        let frameTimer = null;
+        let isPlaying = false;
+        let frameBuffer = [];
+        var cameraIds=[];   // 摄像头列表
+        var ws_list = {};   // ws 列表 {cameraId:ws}
+        var displayImage_list = {}; // {cameraId:{img,imginfo},...}
+        var delaytime = {}; // {cameraId:delaytime,...}
+        var wsTimer;   // 定时器
+        var logoPath = 'http://'+document.location.hostname+':8080/public/images/logo_320x240.jpg'
+
+        // DOM元素
+        const statusDot = document.getElementById('statusDot');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const logContainer = document.getElementById('logContainer');
+        const frameRateElement = document.getElementById('frameRate');
+        const frameCountElement = document.getElementById('frameCount');
+        const latencyElement = document.getElementById('latency');
+        const connectionStatusElement = document.getElementById('connectionStatus');
+        const lastActivityElement = document.getElementById('lastActivity');
+        const serverUrlInput = document.getElementById('serverUrl');
+        const setServerBtn = document.getElementById('setServerBtn');
+        const fpsSlider = document.getElementById('fpsSlider');
+        const fpsValue = document.getElementById('fpsValue');
+        const cameraIdsText = document.getElementById('cameraIds');
+
+        // 默认服务器地址（模拟地址）
+        var query_list = document.location.href.split('?');
+        var query = "" ? query.length < 2 : query_list[1];
+        if (!query.includes("token")) query += "&token=";
+        if (!query.includes("deviceId")) query += "&deviceId=";
+        if (!query.includes("cameraId")) query += "&cameraId=";
+        let serverUrl = 'ws://'+document.location.hostname+':8082/?'+query;//?token=&deviceId=&cameraId=;
+        serverUrlInput.value = serverUrl;
+
+        // 更新状态显示
+        function updateStatus(connected) {
+            if (connected) {
+                statusDot.classList.add('connected');
+                connectionStatusElement.textContent = '已连接';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusDot.classList.remove('connected');
+                connectionStatusElement.textContent = '未连接';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+
+                // 停止播放
+                //pauseVideo();
+            }
+        }
+
+        // 添加日志条目
+        function addLog(message, isError = false) {
+            const now = new Date();
+            const timestamp = `[${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}]`;
+
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+
+            const timestampSpan = document.createElement('span');
+            timestampSpan.className = 'log-timestamp';
+            timestampSpan.textContent = timestamp;
+
+            const messageSpan = document.createElement('span');
+            messageSpan.className = isError ? 'log-message log-error' : 'log-message';
+            messageSpan.textContent = message;
+
+            logEntry.appendChild(timestampSpan);
+            logEntry.appendChild(messageSpan);
+            logContainer.appendChild(logEntry);
+
+            // 自动滚动到底部
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // 显示图片
+        function displayImage(ele){
+            // 在实际应用中，这里应该接收Base64编码的图片数据
+            // 为演示目的，我们使用随机图片
+
+            // 移除占位符（如果存在）
+            const placeholder = imageContainer.querySelector('.placeholder');
+            if (placeholder) {
+                imageContainer.removeChild(placeholder);
+            }
+
+            if (ele in displayImage_list && displayImage_list[ele]) {
+                addLog('视频元素已存在:'+ele, true);
+                return;
+            }
+
+            displayImage_list[ele] = {}
+
+            const imageBox = document.createElement('div');
+            imageBox.className = 'image-box';
+
+            const img = document.createElement('img');
+            displayImage_list[ele].img = img;
+            // 在实际应用中：img.src = 'data:image/jpeg;base64,' + imageData;
+            // 为演示目的，使用随机图片
+            img.src = logoPath;
+            img.alt = `Received video ${ele}`;
+
+            const imageInfo = document.createElement('div');
+            displayImage_list[ele].imageInfo = imageInfo;
+            imageInfo.className = 'image-info';
+            imageInfo.textContent = `视频 #${ele} |`;
+
+            imageBox.appendChild(img);
+            imageBox.appendChild(imageInfo);
+
+            // 添加到容器（在开头添加）
+            imageContainer.insertBefore(imageBox, imageContainer.firstChild);
+
+            // 更新计数
+            //imageCount++;
+            //imageCountElement.textContent = imageCount;
+            //lastActivity = new Date();
+            //lastActivityElement.textContent = lastActivity.toLocaleTimeString();
+        }
+
+        // 主动获取图片
+        function getWebSocketImage() {
+            // 检查是否延时
+            var avgdelaytime = 0;
+            var avglen = 0;
+
+            Object.entries(delaytime).forEach(([key, value]) => {
+                if (value > 0) {
+                    //console.log(key, value);
+                    avgdelaytime += value;
+                    avglen++;
+                }
+            });
+            if (avglen > 0) {
+                avgdelaytime = Math.floor(avgdelaytime/avglen);
+                // 清空 delaytime, 方便下次计数
+                delaytime = {}
+            }
+
+            // 更新延迟显示
+            latencyElement.textContent = `${avgdelaytime}ms`;
+            fpsSlider.value = targetFps;
+            // console.log('平均延迟', avgdelaytime, 'ms', "当前帧速", targetFps);
+
+            // 如果延时超过 1s
+            if (avgdelaytime > 1000  && targetFps > 1) {
+                targetFps = Math.ceil(targetFps/2);
+                console.log("当前帧速", targetFps, avgdelaytime);
+                reconnectWebSocket(avgdelaytime);
+            } else {
+                cameraIds.forEach((ele, index) => {
+                    // console.log(ele, index);
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // console.log('getdata', ws.cameraId);
+                        ws.send('getImage:'+ele);
+                    }
+                })
+            }
+        }
+
+        // 重新连接WebSocket
+        function reconnectWebSocket(avgdelaytime) {
+            // 断开WebSocket
+            disconnectWebSocket();
+
+            // 等待重启
+            addLog(`将在${2*avgdelaytime/1000}秒后重新连接ws`, true);
+            setTimeout(function() {
+                // 连接ws
+                connectWebSocket();
+            }, 2*avgdelaytime);
+
+        }
+
+        // 连接WebSocket
+        function connectWebSocket() {
+            if (cameraIds == []) {
+                alert('摄像头列表为空！')
+                return;
+            }
+
+            cameraIds.forEach((ele, index) => {
+                // 添加图片容器
+                displayImage(ele);
+            })
+
+            var flag = true;
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                addLog('连接已存在:'+ele, true);
+                return;
+            }
+            var serverUrlEle = serverUrl;
+            addLog(`正在连接到: ${serverUrlEle}`);
+
+            try {
+                // 在实际应用中，这里应该连接到真实的WebSocket服务器
+                ws = new WebSocket(serverUrlEle);
+                ws.onopen = () => {
+                    console.log("WebSocket 连接已建立");
+                };
+                ws.onmessage = (event) => {
+                    console.log("收到消息:", event.data);
+                    if (event.data.size > 200) {
+                        //读取时间戳
+                        var reader = new FileReader();
+                        reader.readAsText(event.data.slice(0, 15), 'utf-8');  // 2位cameraId + 13位时间戳
+                        reader.onload = function (e) {
+                            var cameraId = reader.result.substring(0, 2);
+                            var timestamp = parseInt(reader.result.substring(2, 15), 10); // 或者使用parseFloat()如果需要浮点数
+                            var currenttimestamp = Date.now();
+                            var currentdelaytime = currenttimestamp-timestamp;
+                            delaytime[cameraId] = currentdelaytime;
+
+                            displayImage_list[cameraId].img.src = URL.createObjectURL(event.data.slice(15, event.data.length));
+                            displayImage_list[cameraId].imageInfo.textContent = `视频 #${cameraId} | ${new Date(timestamp).toLocaleTimeString()} | 延迟 ${currentdelaytime}ms`;
+                        }
+                    }
+                };
+                ws.onclose = () => {
+                    console.log('WebSocket 连接已关闭');
+                    this.readyState = WebSocket.CLOSED;
+                    addLog('连接已关闭');
+                };
+                ws.onerror = (error) => {
+                    console.error("WebSocket 错误:", error);
+                };
+
+            } catch (error) {
+                addLog(`连接失败: ${error.message}`, true);
+                updateStatus(false);
+                flag = false;
+            }
+
+            frameRateElement.textContent = targetFps;
+            wsTimer = setInterval(getWebSocketImage, 1000 / targetFps);
+            updateStatus(true);
+            addLog('连接成功');
+
+        }
+
+        // 断开WebSocket
+        function disconnectWebSocket() {
+
+            // 首先清除定时器
+            clearInterval(wsTimer);
+
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            updateStatus(false);
+        }
+
+        // 设置服务器地址
+        function setServerUrl() {
+            const url = serverUrlInput.value.trim();
+            if (url) {
+                if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                    addLog('服务器地址必须以 ws:// 或 wss:// 开头', true);
+                    return;
+                }
+                serverUrl = url;
+                addLog(`服务器地址已设置为: ${url}`);
+            } else {
+                addLog('服务器地址不能为空', true);
+            }
+        }
+
+        // 初始化
+        function init() {
+            // 设置事件监听器
+            connectBtn.addEventListener('click', connectWebSocket);
+            disconnectBtn.addEventListener('click', disconnectWebSocket);
+            setServerBtn.addEventListener('click', setServerUrl);
+
+            // 帧率控制
+            fpsSlider.addEventListener('input', () => {
+                targetFps = parseInt(fpsSlider.value);
+                fpsValue.textContent = `${targetFps} FPS`;
+            });
+
+            // 获取 cameraIds
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', 'http://'+document.location.hostname+':8080/getCameras?'+query, true);
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === 4 && xhr.status === 200) {
+                    console.log(xhr.responseText);
+                    var result = JSON.parse(xhr.responseText);
+                    if ("message" in result) {
+                        cameraIds = result.message.split(',');
+                        cameraIdsText.textContent = result.message;
+                    }
+                }
+            };
+            xhr.send();
+
+            // 默认帧率
+            frameRateElement.textContent = targetFps;
+            fpsSlider.value = targetFps;
+
+            // 初始状态
+            updateStatus(false);
+            addLog('应用初始化完成');
+        }
+
+        // 页面加载完成后初始化
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
