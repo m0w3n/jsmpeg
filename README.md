@@ -1,6 +1,18 @@
+安装最新nodejs
+# 安装 nvm（如果未安装）
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+# 安装最新 LTS 版本
+nvm install --lts
+# 使用最新 LTS 版本
+nvm use --lts
+# 再次确认版本
+node -v
+
 apt install redis nodejs npm
 npm install -g nodemon
 cd video-frame-server
+rm -rf node_modules package-lock.json
 npm install express multer ws redis
 node server.js
 
